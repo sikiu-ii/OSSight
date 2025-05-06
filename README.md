@@ -54,5 +54,3 @@ python your_script_name.py
 
 ## 许可证
 本项目采用 [MIT 许可证](LICENSE)。
-
-请将上述内容中的 `https://github.com/yourusername/your-repo.git`、`YOUR_ACCESS_KEY`、`YOUR_SECRET_KEY`、`YOUR_ENDPOINT_URL`、`YOUR_BUCKET_NAME` 和 `your_script_name.py` 替换为实际的项目链接、对象存储信息和脚本文件名。 
