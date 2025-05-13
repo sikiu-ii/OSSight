@@ -10,11 +10,7 @@
 ```bash
 pip install -r requirements.txt
 ```
-其中 `requirements.txt` 文件内容如下：
-```plaintext
-boto3
-gradio
-```
+
 
 ## 使用方法
 ### 1. 配置对象存储信息
