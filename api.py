@@ -6,10 +6,10 @@ import gradio as gr
 from tqdm import tqdm
 
 
-ozone_endpoint = 'https://sdsall.byd.com:8043'  # 替换为你的 Ozone S3 端点
-access_key = 'GDQFBY26FOQFJCQB7TBA'  # 替换为你的访问密钥
-secret_key = 'EyjKZNxNQoQtPOOwzTgRDlGZ5Jyl0W5qGIZ9ySET'  # 替换为你的秘密密钥
-bucket_name = 'bucket-rizhiyi'
+ozone_endpoint = ''  # 替换为你的 Ozone S3 端点
+access_key = ''  # 替换为你的访问密钥
+secret_key = ''  # 替换为你的秘密密钥
+bucket_name = ''
 
 
 class S3OPS:
