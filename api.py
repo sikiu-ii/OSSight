@@ -1,13 +1,15 @@
 import os
 import boto3
 import math
+import socket
 import gradio as gr
+from tqdm import tqdm
 
-# 初始化boto3客户端
-ozone_endpoint = ''  # 替换为你的 Ozone S3 端点
-access_key = ''  # 替换为你的访问密钥
-secret_key = ''  # 替换为你的秘密密钥
-bucket_name = ''
+
+ozone_endpoint = 'https://sdsall.byd.com:8043'  # 替换为你的 Ozone S3 端点
+access_key = 'GDQFBY26FOQFJCQB7TBA'  # 替换为你的访问密钥
+secret_key = 'EyjKZNxNQoQtPOOwzTgRDlGZ5Jyl0W5qGIZ9ySET'  # 替换为你的秘密密钥
+bucket_name = 'bucket-rizhiyi'
 
 
 class S3OPS:
@@ -30,6 +32,21 @@ class S3OPS:
         p = math.pow(1024, i)
         s = round(size_bytes / p, 2)
         return f"{s} {size_name[i]}"
+
+    def _get_local_ip(self) ->str :
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("10.9.0.99", 80))
+            local_ip = s.getsockname()[0]
+        except Exception:
+            local_ip = "127.0.0.1"
+        finally:
+            s.close()
+        return local_ip
+
+    @property
+    def local_ip(self) -> str:
+        return self._get_local_ip()
 
     def list_all_objects(self):
         """
@@ -61,6 +78,39 @@ class S3OPS:
         except Exception as e:
             return f"遍历桶对象失败: {str(e)}"
 
+    def upload_files_with_tqdm(self, local_path: str, prefix: str, s3_prefix: str):
+        """
+        上传文件并实时返回进度（通过yield实现流式输出）
+        """
+        output = ''
+        files = []
+        # 先扫描所有匹配的文件（用于计算总进度）
+        for root, _, filenames in os.walk(local_path):
+            for filename in filenames:
+                if filename.startswith(prefix):
+                    files.append(os.path.join(root, filename))
+
+        # 使用tqdm显示进度
+        with tqdm(total=len(files)) as pbar:
+            for file in files:
+                local_file = file
+                relative_path = os.path.relpath(local_file, local_path)
+                s3_file = os.path.join(s3_prefix, relative_path).replace("\\", "/")
+
+                try:
+                    # 上传文件
+                    self.s3_client.upload_file(local_file, self.bucket, s3_file)
+                    newline = f"✅ 上传成功: {local_file} -> s3://{self.bucket}/{s3_file}\n"
+                    output += newline
+                    yield newline
+                except Exception as e:
+                    yield f"❌ 上传失败 {local_file}: {str(e)}\n"
+
+                pbar.update(1)  # 更新进度条
+                newline = f"📊 进度: {pbar.n}/{pbar.total} ({pbar.n / pbar.total:.0%})\n"  # 实时进度
+                output += newline
+                yield output
+
     def upload_files_with_prefix(self, local_path: str, prefix: str, s3_prefix: str):
         """
         上传符合前缀条件的文件到S3
@@ -69,7 +119,6 @@ class S3OPS:
         :param prefix: 要匹配的文件名前缀(如'ops-ad')
         """
         output = ""
-
         for root, dirs, files in os.walk(local_path):
             for filename in files:
                 if filename.startswith(prefix):
@@ -82,9 +131,9 @@ class S3OPS:
                         output += new_line
                         yield output
                     except Exception as e:
-                        print(f"上传失败 {local_file}: {str(e)}")
+                        yield f"上传失败 {local_file}: {str(e)}"
 
-    def delete_objects_by_prefix(self, prefix: str, s3_prefix: str):
+    def delete_objects_by_prefix(self, prefix: str, s3_prefix):
         """
         删除指定前缀的所有S3对象
 
@@ -93,27 +142,30 @@ class S3OPS:
         """
         output = ''
         try:
-            prefix = f'{s3_prefix}\\' + prefix
+            prefix = f'{s3_prefix}/' + prefix
             # 列出指定前缀的所有对象
             objects_to_delete = []
             response = self.s3_client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
 
             if 'Contents' not in response:
                 yield f"没有找到前缀为 '{prefix}' 的对象"
+                return
 
             # 收集要删除的对象
             for obj in response['Contents']:
                 objects_to_delete.append({'Key': obj['Key']})
-                new_lines = f"准备删除: {obj['Key']}\n"
-                output += new_lines
+                newline = f"准备删除: {obj['Key']}\n"
+                output += newline
                 yield output
 
+            # 执行批量删除(最多1000个对象)
             delete_response = self.s3_client.delete_objects(
                 Bucket=self.bucket,
                 Delete={'Objects': objects_to_delete}
             )
 
-            output += f"成功删除 {len(objects_to_delete)} 个对象\n"
+            newline = f"成功删除 {len(objects_to_delete)} 个对象\n"
+            output += newline
             yield output
 
             # 检查是否有删除失败的对象
@@ -122,7 +174,7 @@ class S3OPS:
                     yield f"删除失败: {error['Key']} - {error['Message']}"
 
         except Exception as e:
-            yield f"删除操作失败: {str(e)}"
+            yield f"删除操作失败: {str(e)}\n"
 
     def download_with_prefix(self, prefix: str, local_dir: str, s3_prefix):
         """
@@ -130,6 +182,7 @@ class S3OPS:
         :param prefix: 要下载的对象前缀(如'logs/2023-')
         :param local_dir: 本地目标目录
         """
+        output = ''
         prefix = f'{s3_prefix}/{prefix}'
         try:
             # 确保本地目录存在
@@ -139,10 +192,11 @@ class S3OPS:
             response = self.s3_client.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
 
             if 'Contents' not in response:
-                print(f"没有找到前缀为 '{prefix}' 的对象")
-                return
+                yield f"没有找到前缀为 '{prefix}' 的对象"
 
-            print(f"开始下载 {len(response['Contents'])} 个对象到 {local_dir}")
+            new_lines = f"开始下载 {len(response['Contents'])} 个对象到 {local_dir}\n"
+            output += new_lines
+            yield output
 
             for obj in response['Contents']:
                 obj_key = obj['Key']
@@ -156,18 +210,21 @@ class S3OPS:
 
                 try:
                     self.s3_client.download_file(self.bucket, obj_key, local_path)
-                    print(f"下载成功: {obj_key} -> {local_path}")
+                    new_lines = f"下载成功: {obj_key} -> {local_path}\n"
+                    output += new_lines
+                    yield output
                 except Exception as e:
-                    print(f"下载失败 {obj_key}: {str(e)}")
-
+                    new_lines = f"下载失败 {obj_key}: {str(e)}\n"
+                    output += new_lines
+                    yield output
         except Exception as e:
             print(f"下载操作失败: {str(e)}")
 
 
 s3_helper = S3OPS(access_key, secret_key, ozone_endpoint, bucket_name)
 
-with gr.Blocks(title="S3 文件管理工具") as demo:
-    gr.Markdown("# S3 文件管理工具(212)")
+with gr.Blocks(title="对象存储") as demo:
+    gr.Markdown(f"{s3_helper.local_ip}机器")
 
     with gr.Tab("桶文件列表"):
         list_btn = gr.Button("列出所有对象")
@@ -185,13 +242,16 @@ with gr.Blocks(title="S3 文件管理工具") as demo:
         with gr.Row():
             remove_prefix = gr.Textbox(label="删除的文件前缀")
             remove_s3_prefix = gr.Textbox(label="S3前缀")
-        confirm_js = """
-        function() {
-            return confirm('确定要删除对象吗? 此操作不可逆。');
-        }
-        """
         remove_btn = gr.Button("删除对象")
         remove_output = gr.Textbox(label="删除结果", lines=40, autoscroll=True)
+
+    with gr.Tab("下载对象"):
+        with gr.Row():
+            download_prefix = gr.Textbox(label="下载的文件前缀")
+            download_s3_prefix = gr.Textbox(label="下载的S3前缀")
+            download_dir = gr.Textbox(label="下载到的本地目录")
+        download_btn = gr.Button("下载对象")
+        download_output = gr.Textbox(label="下载结果", lines=40, autoscroll=True)
 
     list_btn.click(
         s3_helper.list_all_objects,
@@ -200,7 +260,7 @@ with gr.Blocks(title="S3 文件管理工具") as demo:
     )
 
     upload_btn.click(
-        s3_helper.upload_files_with_prefix,
+        s3_helper.upload_files_with_tqdm,
         inputs=[local_path, file_prefix, s3_prefix],
         outputs=upload_output
     )
@@ -209,8 +269,14 @@ with gr.Blocks(title="S3 文件管理工具") as demo:
         s3_helper.delete_objects_by_prefix,
         inputs=[remove_prefix, remove_s3_prefix],
         outputs=remove_output,
-        js=confirm_js
     )
 
+    download_btn.click(
+        s3_helper.download_with_prefix,
+        inputs=[download_prefix, download_dir, download_s3_prefix],
+        outputs=download_output
+    )
 
-demo.launch(server_name="0.0.0.0")
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0")
+
